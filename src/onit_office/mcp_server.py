@@ -5,7 +5,7 @@ Vendored from https://github.com/sibyl-oracles/onit
 
 Tools for creating PowerPoint presentations, Excel spreadsheets, and Word documents.
 
-11 Core Tools:
+12 Core Tools:
 
 PowerPoint:
 1. create_presentation - Create a new presentation with title slide
@@ -24,10 +24,14 @@ Word:
 10. create_document - Create Word document with optional header/logo
 11. add_document_content - Add content (headings, paragraphs, lists, images, tables)
 
+General:
+12. get_file - Retrieve a created file as base64-encoded data for client download
+
 All presentations use standard 16:9 widescreen dimensions (10" x 7.5").
 """
 import os
 import json
+import base64
 import tempfile
 import requests
 from typing import List, Optional
@@ -74,6 +78,25 @@ def _resolve_data_path(path: str) -> str:
         basename = os.path.basename(expanded)
         return os.path.join(abs_data, basename)
     return os.path.abspath(expanded)
+
+
+def _read_file_as_base64(filepath: str) -> dict:
+    """Read a file and return its contents as base64-encoded data with MIME type."""
+    mime_map = {
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    ext = os.path.splitext(filepath)[1].lower()
+    mime_type = mime_map.get(ext, "application/octet-stream")
+    with open(filepath, "rb") as f:
+        data = base64.b64encode(f.read()).decode("ascii")
+    return {
+        "file_name": os.path.basename(filepath),
+        "mime_type": mime_type,
+        "file_data_base64": data,
+        "file_size_bytes": os.path.getsize(filepath),
+    }
 
 
 def _upload_file(filepath: str, callback_url: str) -> dict:
@@ -1115,6 +1138,46 @@ def add_document_content(
             **result_details,
             "status": "success"
         }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "path": path,
+            "status": "failed"
+        })
+
+
+# =============================================================================
+# TOOL 12: GET FILE
+# =============================================================================
+
+@mcp.tool(
+    title="Get File",
+    description="""Retrieve a created file (pptx, xlsx, docx) as base64-encoded data.
+
+Use this tool after you have finished creating and updating a file to send it
+back to the client. Call this as the final step once all edits are complete.
+
+Args:
+- path: Path to the file to retrieve (required)
+
+Returns JSON: {file_name, mime_type, file_data_base64, file_size_bytes, status}"""
+)
+def get_file(path: str) -> str:
+    try:
+        resolved = _resolve_data_path(path)
+        full_path = os.path.abspath(os.path.expanduser(resolved))
+
+        if not os.path.exists(full_path):
+            return json.dumps({
+                "error": f"File not found: {full_path}",
+                "path": path,
+                "status": "failed"
+            })
+
+        result = _read_file_as_base64(full_path)
+        result["status"] = "success"
+        return json.dumps(result)
 
     except Exception as e:
         return json.dumps({
