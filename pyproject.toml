@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onit-office"
+version = "0.1.0"
+description = "Standalone MCP server for Microsoft Office document creation (PowerPoint, Excel, Word)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    {name = "Rowel Atienza", email = "rowel@eee.upd.edu.ph"},
+]
+keywords = ["mcp", "office", "powerpoint", "excel", "word", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "fastmcp>=2.0.0",
+    "python-pptx>=1.0.0",
+    "openpyxl>=3.1.0",
+    "python-docx>=1.0.0",
+    "Pillow>=10.0.0",
+    "requests>=2.31.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/sibyl-oracles/onit-office"
+Repository = "https://github.com/sibyl-oracles/onit-office"
+Issues = "https://github.com/sibyl-oracles/onit-office/issues"
+
+[project.scripts]
+onit-office = "onit_office.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
