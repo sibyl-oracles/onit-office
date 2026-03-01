@@ -5,7 +5,7 @@ Vendored from https://github.com/sibyl-oracles/onit
 
 Tools for creating PowerPoint presentations, Excel spreadsheets, and Word documents.
 
-12 Core Tools:
+18 Core Tools:
 
 PowerPoint:
 1. create_presentation - Create a new presentation with title slide
@@ -15,17 +15,23 @@ PowerPoint:
 5. style_slide - Apply visual styling (backgrounds, colors)
 6. get_presentation_info - Inspect presentation structure and metadata
 7. download_media - Download media files (images, audio, video, PDFs) from URLs
+8. read_presentation - Read full text content from all slides
+9. modify_presentation - Edit text in existing shapes or delete slides
 
 Excel:
-8. create_excel - Create Excel file with headers and data
-9. add_excel_rows - Add rows to existing Excel file
+10. create_excel - Create Excel file with headers and data
+11. add_excel_rows - Add rows to existing Excel file
+12. read_excel - Read cell contents from existing Excel file
+13. modify_excel_cells - Edit specific cells in existing Excel file
 
 Word:
-10. create_document - Create Word document with optional header/logo
-11. add_document_content - Add content (headings, paragraphs, lists, images, tables)
+14. create_document - Create Word document with optional header/logo
+15. add_document_content - Add content (headings, paragraphs, lists, images, tables)
+16. read_document - Read full content from existing Word document
+17. modify_document - Edit or delete paragraphs in existing Word document
 
 General:
-12. get_file - Retrieve a created file as base64-encoded data for client download
+18. get_file - Retrieve a created file as base64-encoded data for client download
 
 All presentations use standard 16:9 widescreen dimensions (10" x 7.5").
 """
@@ -34,7 +40,7 @@ import json
 import base64
 import tempfile
 import requests
-from typing import List, Optional
+from typing import Any, List, Optional, Union
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
@@ -53,7 +59,9 @@ PPTX_HEIGHT = Inches(7.5)
 
 # Data path for file creation (set via options['data_path'] in run())
 # All file writes are confined to this directory.
-DATA_PATH = os.path.join(os.path.expanduser("~"), ".onit-office", "data")
+# Default: a unique temp directory per session, auto-cleaned on exit.
+DATA_PATH = os.path.join(tempfile.gettempdir(), f"onit-office-{os.getpid()}")
+_AUTO_CLEANUP = True  # True when using the default temp path
 
 
 def _secure_makedirs(dir_path: str) -> None:
@@ -218,12 +226,20 @@ def add_slide(
     title: str = "",
     layout: str = "text",
     text: Optional[str] = None,
-    bullets: Optional[List[str]] = None,
+    bullets: Optional[Union[List[str], str]] = None,
     image: Optional[str] = None,
     image_position: str = "right",
-    left_column: Optional[List[str]] = None,
-    right_column: Optional[List[str]] = None
+    left_column: Optional[Union[List[str], str]] = None,
+    right_column: Optional[Union[List[str], str]] = None
 ) -> str:
+    # Accept JSON strings for list parameters (common with LLM callers)
+    if isinstance(bullets, str):
+        bullets = json.loads(bullets)
+    if isinstance(left_column, str):
+        left_column = json.loads(left_column)
+    if isinstance(right_column, str):
+        right_column = json.loads(right_column)
+
     try:
         full_path = os.path.abspath(os.path.expanduser(path))
         prs = Presentation(full_path)
@@ -397,9 +413,13 @@ Returns JSON: {powerpoint_file, status, table_size}"""
 def add_table_slide(
     path: str,
     title: str,
-    data: List[List[str]],
+    data: Union[List[List[str]], str] = None,
     header: bool = True
 ) -> str:
+    # Accept JSON strings for list parameters (common with LLM callers)
+    if isinstance(data, str):
+        data = json.loads(data)
+
     try:
         full_path = os.path.abspath(os.path.expanduser(path))
         prs = Presentation(full_path)
@@ -462,9 +482,13 @@ Returns JSON: {powerpoint_file, status, image_count, grid}"""
 def add_images_slide(
     path: str,
     title: str,
-    images: List[str],
+    images: Union[List[str], str] = None,
     grid: str = "horizontal"
 ) -> str:
+    # Accept JSON strings for list parameters (common with LLM callers)
+    if isinstance(images, str):
+        images = json.loads(images)
+
     try:
         full_path = os.path.abspath(os.path.expanduser(path))
 
@@ -614,6 +638,184 @@ def get_presentation_info(path: str) -> str:
 
 
 # =============================================================================
+# TOOL: READ PRESENTATION CONTENT
+# =============================================================================
+
+@mcp.tool(
+    title="Read Presentation Content",
+    description="""Read full text content from all slides in a PowerPoint presentation.
+
+Unlike get_presentation_info (which returns only slide titles and metadata), this tool returns
+the actual text content from every shape on every slide, plus notes and table data.
+
+Args:
+- path: Path to existing .pptx file (required)
+
+Returns JSON: {powerpoint_file, slide_count, slides: [{index, title, shapes: [{shape_index, name, text, type}], notes, tables}], status}"""
+)
+def read_presentation(path: str) -> str:
+    try:
+        full_path = os.path.abspath(os.path.expanduser(path))
+
+        if not os.path.exists(full_path):
+            return json.dumps({
+                "error": f"File not found: {full_path}",
+                "path": path
+            })
+
+        prs = Presentation(full_path)
+
+        slides = []
+        for slide_idx, slide in enumerate(prs.slides):
+            slide_title = ""
+            if slide.shapes.title:
+                slide_title = slide.shapes.title.text or ""
+
+            shapes_data = []
+            tables_data = []
+            for shape_idx, shape in enumerate(slide.shapes):
+                shape_info = {
+                    "shape_index": shape_idx,
+                    "name": shape.name,
+                    "type": shape.shape_type.__class__.__name__ if hasattr(shape.shape_type, '__class__') else str(shape.shape_type),
+                }
+
+                if shape.has_text_frame:
+                    shape_info["text"] = shape.text_frame.text
+                    shape_info["paragraphs"] = [p.text for p in shape.text_frame.paragraphs]
+
+                if shape.has_table:
+                    table_rows = []
+                    for row in shape.table.rows:
+                        table_rows.append([cell.text for cell in row.cells])
+                    tables_data.append({
+                        "shape_index": shape_idx,
+                        "rows": table_rows
+                    })
+
+                shapes_data.append(shape_info)
+
+            notes_text = ""
+            if slide.has_notes_slide:
+                notes_text = slide.notes_slide.notes_text_frame.text
+
+            slides.append({
+                "index": slide_idx,
+                "title": slide_title,
+                "shapes": shapes_data,
+                "tables": tables_data,
+                "notes": notes_text,
+            })
+
+        return json.dumps({
+            "powerpoint_file": full_path,
+            "slide_count": len(prs.slides),
+            "slides": slides,
+            "status": "success"
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "path": path,
+            "status": "failed"
+        })
+
+
+# =============================================================================
+# TOOL: MODIFY PRESENTATION
+# =============================================================================
+
+@mcp.tool(
+    title="Modify Presentation",
+    description="""Edit text in existing shapes or delete slides in a PowerPoint presentation.
+
+Args:
+- path: Path to existing .pptx file (required)
+- updates: List of shape text updates, each with "slide_index", "shape_index", and "text" (optional)
+- delete_slides: List of slide indices to delete (optional, processed after updates, use descending order internally)
+
+Example updates: [{"slide_index": 0, "shape_index": 0, "text": "New Title"}]
+Example delete_slides: [2, 4]
+
+Returns JSON: {powerpoint_file, shapes_updated, slides_deleted, status}"""
+)
+def modify_presentation(
+    path: str,
+    updates: Optional[Union[List[dict], str]] = None,
+    delete_slides: Optional[Union[List[int], str]] = None,
+) -> str:
+    if isinstance(updates, str):
+        updates = json.loads(updates)
+    if isinstance(delete_slides, str):
+        delete_slides = json.loads(delete_slides)
+
+    try:
+        full_path = os.path.abspath(os.path.expanduser(path))
+
+        if not os.path.exists(full_path):
+            return json.dumps({
+                "error": f"File not found: {full_path}",
+                "path": path
+            })
+
+        if not updates and not delete_slides:
+            return json.dumps({"error": "Either updates or delete_slides is required"})
+
+        prs = Presentation(full_path)
+        shapes_updated = 0
+        slides_deleted = 0
+
+        if updates:
+            for update in updates:
+                slide_idx = update.get("slide_index")
+                shape_idx = update.get("shape_index")
+                new_text = update.get("text")
+                if slide_idx is None or shape_idx is None or new_text is None:
+                    continue
+                if slide_idx < 0 or slide_idx >= len(prs.slides):
+                    continue
+                slide = prs.slides[slide_idx]
+                if shape_idx < 0 or shape_idx >= len(slide.shapes):
+                    continue
+                shape = slide.shapes[shape_idx]
+                if shape.has_text_frame:
+                    shape.text_frame.clear()
+                    shape.text_frame.paragraphs[0].text = new_text
+                    shapes_updated += 1
+
+        if delete_slides:
+            slide_id_map = []
+            for idx in sorted(delete_slides, reverse=True):
+                if 0 <= idx < len(prs.slides):
+                    rId = prs.slides._sldIdLst[idx].get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+                    slide_id_map.append((idx, rId))
+
+            for idx, rId in slide_id_map:
+                sldId = prs.slides._sldIdLst[idx]
+                prs.slides._sldIdLst.remove(sldId)
+                if rId:
+                    prs.part.drop_rel(rId)
+                slides_deleted += 1
+
+        prs.save(full_path)
+
+        return json.dumps({
+            "powerpoint_file": full_path,
+            "shapes_updated": shapes_updated,
+            "slides_deleted": slides_deleted,
+            "status": "success"
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "path": path,
+            "status": "failed"
+        })
+
+
+# =============================================================================
 # TOOL 7: DOWNLOAD MEDIA
 # =============================================================================
 
@@ -730,11 +932,17 @@ Returns JSON: {excel_file, sheet_name, headers, row_count, status}"""
 def create_excel(
     path: str = "",
     sheet_name: str = "Sheet1",
-    headers: Optional[List[str]] = None,
-    rows: Optional[List[List]] = None,
+    headers: Optional[Union[List[str], str]] = None,
+    rows: Optional[Union[List[List[Any]], str]] = None,
     auto_width: bool = True,
     callback_url: Optional[str] = None
 ) -> str:
+    # Accept JSON strings for list parameters (common with LLM callers)
+    if isinstance(headers, str):
+        headers = json.loads(headers)
+    if isinstance(rows, str):
+        rows = json.loads(rows)
+
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill, Alignment
@@ -826,10 +1034,14 @@ Returns JSON: {excel_file, sheet_name, rows_added, total_rows, status}"""
 )
 def add_excel_rows(
     path: str,
-    rows: List[List],
+    rows: Union[List[List[Any]], str] = None,
     sheet_name: Optional[str] = None,
     auto_width: bool = True
 ) -> str:
+    # Accept JSON strings for list parameters (common with LLM callers)
+    if isinstance(rows, str):
+        rows = json.loads(rows)
+
     try:
         from openpyxl import load_workbook
         from openpyxl.utils import get_column_letter
@@ -899,7 +1111,176 @@ def add_excel_rows(
 
 
 # =============================================================================
-# TOOL 10: CREATE WORD DOCUMENT
+# TOOL: READ EXCEL FILE
+# =============================================================================
+
+@mcp.tool(
+    title="Read Excel File",
+    description="""Read cell contents from an existing Excel file.
+
+Args:
+- path: Path to existing .xlsx file (required)
+- sheet_name: Worksheet name (default: active sheet)
+- max_rows: Maximum number of data rows to return (default: 500)
+
+Returns JSON: {excel_file, sheet_name, sheets, headers, rows, row_count, total_rows, status}"""
+)
+def read_excel(
+    path: str,
+    sheet_name: Optional[str] = None,
+    max_rows: int = 500,
+) -> str:
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return json.dumps({
+            "error": "openpyxl not installed. Run: pip install openpyxl",
+            "path": path
+        })
+
+    try:
+        full_path = os.path.abspath(os.path.expanduser(path))
+
+        if not os.path.exists(full_path):
+            return json.dumps({
+                "error": f"Excel file not found: {full_path}",
+                "path": path
+            })
+
+        wb = load_workbook(full_path, read_only=True, data_only=True)
+
+        if sheet_name:
+            if sheet_name not in wb.sheetnames:
+                wb.close()
+                return json.dumps({
+                    "error": f"Sheet '{sheet_name}' not found. Available: {wb.sheetnames}",
+                    "path": path
+                })
+            ws = wb[sheet_name]
+        else:
+            ws = wb.active
+            sheet_name = ws.title
+
+        headers = []
+        rows_data = []
+        total_rows = 0
+
+        for row_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
+            if row_idx == 1:
+                headers = [str(c) if c is not None else "" for c in row]
+            else:
+                total_rows += 1
+                if total_rows <= max_rows:
+                    rows_data.append([c if c is not None else "" for c in row])
+
+        wb.close()
+
+        return json.dumps({
+            "excel_file": full_path,
+            "sheet_name": sheet_name,
+            "sheets": wb.sheetnames if hasattr(wb, 'sheetnames') else [sheet_name],
+            "headers": headers,
+            "rows": rows_data,
+            "row_count": len(rows_data),
+            "total_rows": total_rows,
+            "truncated": total_rows > max_rows,
+            "status": "success"
+        }, indent=2, default=str)
+
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "path": path,
+            "status": "failed"
+        })
+
+
+# =============================================================================
+# TOOL: MODIFY EXCEL CELLS
+# =============================================================================
+
+@mcp.tool(
+    title="Modify Excel Cells",
+    description="""Edit specific cells in an existing Excel file.
+
+Args:
+- path: Path to existing .xlsx file (required)
+- updates: List of cell updates, each with "cell" (e.g., "A1", "B3") and "value" (required)
+- sheet_name: Worksheet name (default: active sheet)
+
+Example updates: [{"cell": "A1", "value": "New Title"}, {"cell": "B3", "value": 42}]
+
+Returns JSON: {excel_file, sheet_name, cells_updated, status}"""
+)
+def modify_excel_cells(
+    path: str,
+    updates: Union[List[dict], str] = None,
+    sheet_name: Optional[str] = None,
+) -> str:
+    if isinstance(updates, str):
+        updates = json.loads(updates)
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return json.dumps({
+            "error": "openpyxl not installed. Run: pip install openpyxl",
+            "path": path
+        })
+
+    try:
+        full_path = os.path.abspath(os.path.expanduser(path))
+
+        if not os.path.exists(full_path):
+            return json.dumps({
+                "error": f"Excel file not found: {full_path}",
+                "path": path
+            })
+
+        if not updates:
+            return json.dumps({"error": "updates parameter is required"})
+
+        wb = load_workbook(full_path)
+
+        if sheet_name:
+            if sheet_name not in wb.sheetnames:
+                return json.dumps({
+                    "error": f"Sheet '{sheet_name}' not found. Available: {wb.sheetnames}",
+                    "path": path
+                })
+            ws = wb[sheet_name]
+        else:
+            ws = wb.active
+            sheet_name = ws.title
+
+        cells_updated = 0
+        for update in updates:
+            cell_ref = update.get("cell")
+            value = update.get("value")
+            if cell_ref is None:
+                continue
+            ws[cell_ref] = value
+            cells_updated += 1
+
+        wb.save(full_path)
+
+        return json.dumps({
+            "excel_file": full_path,
+            "sheet_name": sheet_name,
+            "cells_updated": cells_updated,
+            "status": "success"
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "path": path,
+            "status": "failed"
+        })
+
+
+# =============================================================================
+# TOOL: CREATE WORD DOCUMENT
 # =============================================================================
 
 @mcp.tool(
@@ -929,9 +1310,13 @@ def create_document(
     logo_width_inches: float = 1.5,
     content_type: Optional[str] = None,
     text: Optional[str] = None,
-    items: Optional[List[str]] = None,
+    items: Optional[Union[List[str], str]] = None,
     callback_url: Optional[str] = None,
 ) -> str:
+    # Accept JSON strings for list parameters (common with LLM callers)
+    if isinstance(items, str):
+        items = json.loads(items)
+
     try:
         from docx import Document
         from docx.shared import Inches
@@ -1040,12 +1425,18 @@ def add_document_content(
     content_type: str,
     text: Optional[str] = None,
     level: int = 1,
-    items: Optional[List[str]] = None,
+    items: Optional[Union[List[str], str]] = None,
     image_path: Optional[str] = None,
     image_width_inches: float = 5.0,
-    table_data: Optional[List[List]] = None,
+    table_data: Optional[Union[List[List[Any]], str]] = None,
     table_header: bool = True
 ) -> str:
+    # Accept JSON strings for list parameters (common with LLM callers)
+    if isinstance(items, str):
+        items = json.loads(items)
+    if isinstance(table_data, str):
+        table_data = json.loads(table_data)
+
     try:
         from docx import Document
         from docx.shared import Inches
@@ -1148,7 +1539,180 @@ def add_document_content(
 
 
 # =============================================================================
-# TOOL 12: GET FILE
+# TOOL: READ WORD DOCUMENT
+# =============================================================================
+
+@mcp.tool(
+    title="Read Word Document",
+    description="""Read full content from an existing Word document.
+
+Args:
+- path: Path to existing .docx file (required)
+
+Returns JSON: {document_file, paragraphs: [{index, text, style}], tables: [{index, rows}], headers, footers, section_count, status}"""
+)
+def read_document(path: str) -> str:
+    try:
+        from docx import Document
+    except ImportError:
+        return json.dumps({
+            "error": "python-docx not installed. Run: pip install python-docx",
+            "path": path
+        })
+
+    try:
+        full_path = os.path.abspath(os.path.expanduser(path))
+
+        if not os.path.exists(full_path):
+            return json.dumps({
+                "error": f"Document not found: {full_path}",
+                "path": path
+            })
+
+        doc = Document(full_path)
+
+        paragraphs = []
+        for idx, para in enumerate(doc.paragraphs):
+            paragraphs.append({
+                "index": idx,
+                "text": para.text,
+                "style": para.style.name if para.style else "Normal",
+            })
+
+        tables = []
+        for idx, table in enumerate(doc.tables):
+            table_rows = []
+            for row in table.rows:
+                table_rows.append([cell.text for cell in row.cells])
+            tables.append({"index": idx, "rows": table_rows})
+
+        headers = []
+        footers = []
+        for section in doc.sections:
+            if section.header and section.header.paragraphs:
+                header_text = "\n".join(p.text for p in section.header.paragraphs if p.text)
+                if header_text:
+                    headers.append(header_text)
+            if section.footer and section.footer.paragraphs:
+                footer_text = "\n".join(p.text for p in section.footer.paragraphs if p.text)
+                if footer_text:
+                    footers.append(footer_text)
+
+        return json.dumps({
+            "document_file": full_path,
+            "paragraphs": paragraphs,
+            "tables": tables,
+            "headers": headers,
+            "footers": footers,
+            "section_count": len(doc.sections),
+            "paragraph_count": len(paragraphs),
+            "table_count": len(tables),
+            "status": "success"
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "path": path,
+            "status": "failed"
+        })
+
+
+# =============================================================================
+# TOOL: MODIFY WORD DOCUMENT
+# =============================================================================
+
+@mcp.tool(
+    title="Modify Word Document",
+    description="""Edit or delete paragraphs in an existing Word document.
+
+Args:
+- path: Path to existing .docx file (required)
+- updates: List of paragraph updates, each with "paragraph_index" (int), and optionally "text" (new text) and/or "style" (new style name) (optional)
+- delete_indices: List of paragraph indices to delete (optional, processed after updates)
+
+Example updates: [{"paragraph_index": 0, "text": "New Title"}, {"paragraph_index": 2, "style": "Heading 2"}]
+Example delete_indices: [3, 5]
+
+Returns JSON: {document_file, paragraphs_updated, paragraphs_deleted, status}"""
+)
+def modify_document(
+    path: str,
+    updates: Optional[Union[List[dict], str]] = None,
+    delete_indices: Optional[Union[List[int], str]] = None,
+) -> str:
+    if isinstance(updates, str):
+        updates = json.loads(updates)
+    if isinstance(delete_indices, str):
+        delete_indices = json.loads(delete_indices)
+
+    try:
+        from docx import Document
+    except ImportError:
+        return json.dumps({
+            "error": "python-docx not installed. Run: pip install python-docx",
+            "path": path
+        })
+
+    try:
+        full_path = os.path.abspath(os.path.expanduser(path))
+
+        if not os.path.exists(full_path):
+            return json.dumps({
+                "error": f"Document not found: {full_path}",
+                "path": path
+            })
+
+        if not updates and not delete_indices:
+            return json.dumps({"error": "Either updates or delete_indices is required"})
+
+        doc = Document(full_path)
+        paragraphs_updated = 0
+        paragraphs_deleted = 0
+
+        if updates:
+            for update in updates:
+                idx = update.get("paragraph_index")
+                if idx is None or idx < 0 or idx >= len(doc.paragraphs):
+                    continue
+                para = doc.paragraphs[idx]
+                if "text" in update:
+                    para.clear()
+                    para.add_run(update["text"])
+                    paragraphs_updated += 1
+                if "style" in update:
+                    try:
+                        para.style = update["style"]
+                    except KeyError:
+                        pass
+                    paragraphs_updated += 1
+
+        if delete_indices:
+            for idx in sorted(delete_indices, reverse=True):
+                if 0 <= idx < len(doc.paragraphs):
+                    p = doc.paragraphs[idx]._element
+                    p.getparent().remove(p)
+                    paragraphs_deleted += 1
+
+        doc.save(full_path)
+
+        return json.dumps({
+            "document_file": full_path,
+            "paragraphs_updated": paragraphs_updated,
+            "paragraphs_deleted": paragraphs_deleted,
+            "status": "success"
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "path": path,
+            "status": "failed"
+        })
+
+
+# =============================================================================
+# TOOL: GET FILE
 # =============================================================================
 
 @mcp.tool(
