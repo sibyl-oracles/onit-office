@@ -102,11 +102,23 @@ Example MCP client config:
 
 ## Data Directory
 
-Created files are stored in `~/.onit-office/data/` by default. Override with `--data-path`.
+By default, created files are stored in a temporary directory unique to each server process (`<system temp dir>/onit-office-<pid>`, e.g. `/tmp/onit-office-12345`). This directory is **automatically cleaned up** when the server exits.
+
+To persist files across restarts, specify a custom data path:
+
+```bash
+onit-office start --data-path /path/to/my/data
+```
+
+When `--data-path` is provided, auto-cleanup is disabled and files are retained.
 
 ## Docker
 
-See [DOCKER.md](DOCKER.md) for Docker build and run instructions.
+See [docs/DOCKER.md](docs/DOCKER.md) for Docker build and run instructions.
+
+## Testing
+
+See [docs/TESTING.md](docs/TESTING.md) for how to run and structure tests.
 
 ## License
 

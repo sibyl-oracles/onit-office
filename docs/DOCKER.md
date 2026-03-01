@@ -14,14 +14,20 @@ docker run -d -p 18203:18203 -v onit-office-data:/root/.onit-office/data --name 
 
 The MCP server SSE endpoint will be available at `http://localhost:18203/sse`.
 
-Created files are stored in `/root/.onit-office/data/` (the default data path). The command above uses a named volume (`onit-office-data`) so files persist across container restarts.
+By default, created files are stored in a temporary directory inside the container (`/tmp/onit-office-<pid>`) and are **automatically cleaned up** when the server exits. To persist files, use `--data-path` with a volume mount:
+
+```bash
+docker run -d -p 18203:18203 -v onit-office-data:/data --name onit-office onit-office --data-path /data
+```
+
+The named volume (`onit-office-data`) ensures files persist across container restarts.
 
 ### Bind mount to a local directory
 
 To access created files directly on your host:
 
 ```bash
-docker run -d -p 18203:18203 -v $(pwd)/output:/root/.onit-office/data --name onit-office onit-office
+docker run -d -p 18203:18203 -v $(pwd)/output:/data --name onit-office onit-office --data-path /data
 ```
 
 Files will appear in `./output/`.
